@@ -501,6 +501,8 @@ type GcsConnectionConfig struct {
 
 	MaxIdleConnsPerHost int64 `yaml:"max-idle-conns-per-host"`
 
+	MinReadSizeKb int64 `yaml:"min-read-size-kb"`
+
 	SequentialReadSizeMb int64 `yaml:"sequential-read-size-mb"`
 }
 
@@ -1084,6 +1086,8 @@ func BuildFlagSet(flagSet *pflag.FlagSet) error {
 
 	flagSet.BoolP("reuse-token-from-url", "", true, "If false, the token acquired from token-url is not reused.")
 
+	flagSet.IntP("min-read-size-kb", "", 1024, "Minimum size in KB to fetch from GCS in a single request for random reads. Set to 0 to fetch only the exact bytes requested (useful for block device workloads). Default: 1024 (1MB)")
+
 	flagSet.IntP("sequential-read-size-mb", "", 200, "File chunk size to read from GCS in one call. Need to specify the value in MB. ChunkSize less than 1MB is not supported")
 
 	flagSet.DurationP("stackdriver-export-interval", "", 0*time.Nanosecond, "Export metrics to stackdriver with this interval. A value of 0 indicates no exporting.")
@@ -1564,6 +1568,10 @@ func BindFlags(v *viper.Viper, flagSet *pflag.FlagSet) error {
 	}
 
 	if err := v.BindPFlag("gcs-auth.reuse-token-from-url", flagSet.Lookup("reuse-token-from-url")); err != nil {
+		return err
+	}
+
+	if err := v.BindPFlag("gcs-connection.min-read-size-kb", flagSet.Lookup("min-read-size-kb")); err != nil {
 		return err
 	}
 

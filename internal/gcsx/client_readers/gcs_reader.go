@@ -78,6 +78,10 @@ type GCSReader struct {
 
 	sequentialReadSizeMb int32
 
+	// minReadSize is the minimum number of bytes to fetch from GCS for random reads.
+	// If 0, fetches only the exact bytes requested.
+	minReadSize int64
+
 	// Specifies the next expected offset for the reads. Used to distinguish between
 	// sequential and random reads.
 	expectedOffset atomic.Int64
@@ -100,10 +104,17 @@ type GCSReaderConfig struct {
 }
 
 func NewGCSReader(obj *gcs.MinObject, bucket gcs.Bucket, config *GCSReaderConfig) *GCSReader {
+	// Determine minReadSize from config, default to 1MB
+	minRead := minReadSize // Use the const as default (1MB)
+	if config.Config != nil && config.Config.GcsConnection.MinReadSizeKb >= 0 {
+		minRead = config.Config.GcsConnection.MinReadSizeKb * 1024 // Convert KB to bytes
+	}
+
 	return &GCSReader{
 		object:               obj,
 		bucket:               bucket,
 		sequentialReadSizeMb: config.SequentialReadSizeMb,
+		minReadSize:          minRead,
 		rangeReader:          NewRangeReader(obj, bucket, config.Config, config.MetricHandle),
 		mrr:                  NewMultiRangeReader(obj, config.MetricHandle, config.MrdWrapper),
 	}
@@ -196,7 +207,8 @@ func (gr *GCSReader) read(ctx context.Context, readReq *gcsx.GCSReaderRequest) (
 			defer gr.mu.Unlock()
 			// Calculate the end offset based on previous read requests.
 			// It will be used if a new range reader needs to be created.
-			readReq.EndOffset = gr.getEndOffset(readReq.Offset)
+			// Pass the originally requested end offset so determineEnd can respect it in exact read mode.
+			readReq.EndOffset = gr.getEndOffset(readReq.Offset, readReq.EndOffset)
 			readReq.ReadType = readInfo.readType
 			readerResp, err = gr.rangeReader.ReadAt(ctx, readReq)
 			return readerResp.Size, err
@@ -235,10 +247,13 @@ func isSeekNeeded(readType, offset, expectedOffset int64) bool {
 }
 
 func (gr *GCSReader) getEndOffset(
-	start int64) (end int64) {
+	start int64, requestedEnd int64) (end int64) {
 
-	end = gr.determineEnd(start)
-	end = gr.limitEnd(start, end)
+	end = gr.determineEnd(start, requestedEnd)
+	// Only apply limitEnd if we're not in exact read mode (minReadSize > 0)
+	if gr.minReadSize > 0 {
+		end = gr.limitEnd(start, end)
+	}
 	return end
 }
 
@@ -278,13 +293,19 @@ func (gr *GCSReader) getReadInfo(offset int64, seekRecorded bool) readInfo {
 }
 
 // determineEnd calculates the end position for a read operation based on the current read pattern.
-func (gr *GCSReader) determineEnd(start int64) int64 {
+func (gr *GCSReader) determineEnd(start int64, requestedEnd int64) int64 {
+	// If minReadSize is 0, use exact read mode - fetch only what was requested
+	if gr.minReadSize == 0 {
+		return min(requestedEnd, int64(gr.object.Size))
+	}
+
 	end := int64(gr.object.Size)
 	if seeks := gr.seeks.Load(); seeks >= minSeeksForRandom {
 		gr.readType.Store(metrics.ReadTypeRandom)
 		averageReadBytes := gr.totalReadBytes.Load() / seeks
 		if averageReadBytes < maxReadSize {
-			randomReadSize := max(int64(((averageReadBytes/MB)+1)*MB), minReadSize)
+			// Use instance minReadSize instead of const
+			randomReadSize := max(int64(((averageReadBytes/MB)+1)*MB), gr.minReadSize)
 			if randomReadSize > maxReadSize {
 				randomReadSize = maxReadSize
 			}

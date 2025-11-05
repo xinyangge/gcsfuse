@@ -519,6 +519,12 @@ params:
     usage: "The number of maximum idle connections allowed per server."
     default: "100"
 
+  - config-path: "gcs-connection.min-read-size-kb"
+    flag-name: "min-read-size-kb"
+    type: "int"
+    usage: "Minimum size in KB to fetch from GCS in a single request for random reads. Set to 0 to fetch only the exact bytes requested (useful for block device workloads). Default: 1024 (1MB)"
+    default: "1024"
+
   - config-path: "gcs-connection.sequential-read-size-mb"
     flag-name: "sequential-read-size-mb"
     type: "int"
